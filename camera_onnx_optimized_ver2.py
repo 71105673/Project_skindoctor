@@ -413,11 +413,9 @@ def main():
     print(f"⚡ 사용 가능한 ONNX Providers: {ort.get_available_providers()}")
     print("=" * 55)
     
-    # 캡처 폴더 생성
     if not os.path.exists(CAPTURE_FOLDER):
         os.makedirs(CAPTURE_FOLDER)
     
-    # 최적화된 모델 초기화
     model, model_type = initialize_optimized_model()
     if model is None:
         print("❌ 사용 가능한 모델이 없습니다.")
@@ -425,12 +423,9 @@ def main():
     
     print(f"📊 사용 중인 모델: {model_type}")
     
-    # 성능 벤치마킹 (ONNX 모델의 경우)
     if model_type and ("ONNX" in model_type or "최적화" in model_type):
         test_data = np.random.random((1, 96, 96, 3)).astype(np.float32)
         avg_time, fps = benchmark_model(model, test_data)
-        
-        # 비동기 예측기 초기화
         async_predictor = AsyncPredictor(model)
         use_async = True
         print("🔄 비동기 예측 모드 활성화")
@@ -438,7 +433,6 @@ def main():
         use_async = False
         print("⏳ 동기 예측 모드 사용")
     
-    # 폰트 설정 (OS별 대응)
     font_path = get_system_font_path()
     try:
         if font_path and os.path.exists(font_path):
@@ -454,244 +448,118 @@ def main():
         small_font = ImageFont.load_default()
         print("⚠️ 폰트 로드 실패, 기본 폰트를 사용합니다")
 
-    # --- 카메라 열기 --------------------------------------------------
     cap = open_camera()
     if cap is None:
         print("❌ 사용 가능한 카메라를 찾지 못했습니다.")
-        print("💡 다른 앱이 카메라를 점유 중인지 또는 권한(video 그룹) 여부를 확인하세요.")
         return
 
-    # --- 해상도 / FPS / FOURCC 설정 (가능한 경우에만) ---------------
     try_set(cap, cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
     try_set(cap, cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
     try_set(cap, cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
     try_set(cap, cv2.CAP_PROP_FPS, CAMERA_FPS)
 
-    # 위 try_set 단계에서 이미 해상도·FPS 설정을 시도했으므로
-    # 추가 cap.set 호출을 제거하여 일부 카메라에서 프레임이 0×0으로
-    # 변하는 문제를 방지합니다.
-
-    print("📷 카메라가 준비되었습니다.")
-    print("화면을 보며 진단할 부위를 중앙에 위치시키세요.")
-    print("키보드 'c'를 누르면 5초간 연속으로 촬영하여 진단합니다.")
-    print("키보드 'q'를 누르면 프로그램을 종료합니다.")
-    print("키보드 'b'를 누르면 벤치마킹을 다시 실행합니다.")
-
-    # ----------------- OpenCV 창 설정 -----------------
     window_name = "ONNX Skin Disease Diagnosis"
     cv2.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
-    # --------------------------------------------------
 
-    # 성능 측정 변수
     frame_count = 0
     fps_start_time = time.time()
-    current_fps = 0.0 # FPS 값을 저장할 변수 초기화
-    last_display_update_time = time.time() # 마지막 디스플레이 업데이트 시간
-    current_display_label = ""
+    current_fps = 0.0
 
-    # 예측 스무딩을 위한 리스트
-    recent_predictions = []
-    
+    measuring_mode = False
+    measuring_class = None
+    measuring_start_time = None
+    MEASURING_DURATION = 5  # 초
+
     while True:
         ret, frame = cap.read()
         if not ret:
             print("오류: 카메라에서 프레임을 읽을 수 없습니다.")
             break
 
-        # 중앙 1:1 영역 crop
         h, w, _ = frame.shape
         min_dim = min(h, w)
         start_x = (w - min_dim) // 2
         start_y = (h - min_dim) // 2
         crop_frame = frame[start_y:start_y+min_dim, start_x:start_x+min_dim]
 
-        # 이미지 전처리
         img_array = cv2.resize(crop_frame, (96, 96))
-        img_array = np.expand_dims(img_array, axis=0)
-        img_array = img_array.astype(np.float32) / 255.0
+        img_array = np.expand_dims(img_array, axis=0).astype(np.float32) / 255.0
 
-        # 예측 수행
         if use_async:
-            # 비동기 예측
             async_predictor.predict_async(img_array)
             predictions = async_predictor.get_prediction()
-            
-            if predictions is not None:
-                current_predicted_class_idx = np.argmax(predictions[0])
-                current_confidence = predictions[0][current_predicted_class_idx]
-            else:
-                current_predicted_class_idx = 0
-                current_confidence = 0.0
         else:
-            # 동기 예측
-            if model_type and ("ONNX" in model_type or "최적화" in model_type):
-                predictions = model.predict(img_array)
-                if predictions is not None:
-                    current_predicted_class_idx = np.argmax(predictions[0])
-                    current_confidence = predictions[0][current_predicted_class_idx]
-                else:
-                    current_predicted_class_idx = 0
-                    current_confidence = 0.0
-            else:
-                predictions = model.predict(img_array, verbose=0)
-                current_predicted_class_idx = np.argmax(predictions[0])
-                current_confidence = predictions[0][current_predicted_class_idx]
+            predictions = model.predict(img_array, verbose=0) if not hasattr(model, 'session') else model.predict(img_array)
 
-        # 예측 결과 스무딩
-        recent_predictions.append((current_predicted_class_idx, current_confidence))
-        if len(recent_predictions) > PREDICTION_SMOOTHING_WINDOW_SIZE:
-            recent_predictions.pop(0) # 가장 오래된 예측 제거
-
-        # 스무딩된 예측 결과 계산
-        if recent_predictions:
-            # 각 클래스별로 등장 횟수 계산
-            class_counts = {}
-            for idx, _ in recent_predictions:
-                class_counts[idx] = class_counts.get(idx, 0) + 1
-            
-            # 가장 많이 등장한 클래스 선택
-            smoothed_predicted_class_idx = max(class_counts, key=class_counts.get)
-            
-            # 해당 클래스의 평균 신뢰도 계산
-            smoothed_confidence_sum = sum([conf for idx, conf in recent_predictions if idx == smoothed_predicted_class_idx])
-            smoothed_confidence_count = class_counts[smoothed_predicted_class_idx]
-            smoothed_confidence = smoothed_confidence_sum / smoothed_confidence_count
+        if predictions is not None:
+            predicted_idx = np.argmax(predictions[0])
+            confidence = predictions[0][predicted_idx]
         else:
-            smoothed_predicted_class_idx = 0
-            smoothed_confidence = 0.0
+            predicted_idx = 0
+            confidence = 0.0
 
-        # 화면 표시 업데이트 주기 제어
-        current_time = time.time()
-        if (current_time - last_display_update_time) * 1000 >= DISPLAY_UPDATE_INTERVAL_MS:
-            current_display_label = f"{class_names_kr[smoothed_predicted_class_idx]} ({smoothed_confidence*100:.1f}%)"
-            last_display_update_time = current_time
+        current_class = predicted_idx
 
-        # FPS 계산
+        # 측정 모드 진입 시 유지 판단
+        if measuring_mode:
+            if measuring_class == current_class:
+                elapsed_time = time.time() - measuring_start_time
+                if elapsed_time >= MEASURING_DURATION:
+                    final_class_name = class_names_kr[measuring_class]
+                    print("\n" + "="*50)
+                    print(f"✅ 최종 진단: {final_class_name} (5초 이상 지속)")
+                    print("="*50)
+                    solution = get_solution_from_gemma(final_class_name)
+                    print("\n[Ollama Gemma3의 건강 조언]")
+                    print(solution)
+                    print("\n(주의: 이 정보는 참고용이며, 정확한 진단과 치료를 위해 반드시 전문 의료기관을 방문하세요.)")
+                    speak_korean_gtts(solution)
+                    measuring_mode = False
+            else:
+                measuring_class = current_class
+                measuring_start_time = time.time()
+
         frame_count += 1
         if frame_count % 30 == 0:
             fps_end_time = time.time()
             current_fps = 30 / (fps_end_time - fps_start_time)
             fps_start_time = fps_end_time
 
-        # 화면에 표시
         img_pil = Image.fromarray(cv2.cvtColor(crop_frame, cv2.COLOR_BGR2RGB))
         draw = ImageDraw.Draw(img_pil)
-        
-        # 메인 정보
+
         draw.text((10, 10), f"🔬 실시간 예측 ({model_type}):", font=font, fill=(0, 255, 0))
-        draw.text((10, 35), current_display_label, font=font, fill=(0, 255, 0))
-        
-        # 성능 정보 (FPS는 항상 표시)
+        draw.text((10, 35), f"{class_names_kr[current_class]} ({confidence*100:.1f}%)", font=font, fill=(0, 255, 0))
         draw.text((10, 65), f"⚡ FPS: {current_fps:.1f}", font=small_font, fill=(255, 255, 0))
-        
-        # 사용 중인 Provider 정보 (ONNX 모델의 경우)
+
         if hasattr(model, 'session'):
             provider_info = model.session.get_providers()[0]
             draw.text((10, 85), f"💻 Provider: {provider_info.replace('ExecutionProvider', '')}", font=small_font, fill=(255, 255, 0))
-        
+
         display_frame = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
         cv2.imshow(window_name, display_frame)
 
         key = cv2.waitKey(1) & 0xFF
 
-        # 'b' 키로 벤치마킹 실행
         if key == ord('b') and ("ONNX" in model_type or "최적화" in model_type):
             print("\n" + "="*50)
             print("🏃 실시간 벤치마킹 실행")
             print("="*50)
             avg_time, fps = benchmark_model(model, img_array)
 
-        # 'c' 키로 진단 실행
         elif key == ord('c'):
-            # 화면을 검게 만들고 "의사의 답변 준비중..." 메시지 표시
-            black_screen = np.zeros_like(display_frame)
-            
-            # Pillow를 사용하여 텍스트 추가
-            img_pil_black = Image.fromarray(cv2.cvtColor(black_screen, cv2.COLOR_BGR2RGB))
-            draw_black = ImageDraw.Draw(img_pil_black)
-            
-            text = "의사의 답변 준비중..."
-            
-            # 텍스트 크기 계산
-            try:
-                # Pillow 10.0.0 이상
-                text_bbox = draw_black.textbbox((0, 0), text, font=font)
-                text_width = text_bbox[2] - text_bbox[0]
-                text_height = text_bbox[3] - text_bbox[1]
-            except AttributeError:
-                # 이전 버전의 Pillow
-                text_width, text_height = draw_black.textsize(text, font=font)
+            print("🕵️‍♀️ 측정 모드 활성화 (5초 이상 동일 클래스 유지 시 진단)")
+            measuring_mode = True
+            measuring_class = current_class
+            measuring_start_time = time.time()
 
-            text_x = (black_screen.shape[1] - text_width) // 2
-            text_y = (black_screen.shape[0] - text_height) // 2
-            
-            draw_black.text((text_x, text_y), text, font=font, fill=(255, 255, 255))
-            
-            # OpenCV 형식으로 다시 변환하여 표시
-            black_screen_with_text = cv2.cvtColor(np.array(img_pil_black), cv2.COLOR_RGB2BGR)
-            cv2.imshow(window_name, black_screen_with_text)
-            cv2.waitKey(1) # 화면을 즉시 업데이트
-
-            # 진단 로직 (기존과 동일)
-            print("\n" + "="*40)
-            print(f"진단을 시작합니다. {CAPTURE_COUNT}초 동안 {CAPTURE_COUNT}번 촬영합니다.")
-            print("="*40)
-            
-            captured_classes = []
-            
-            for i in range(CAPTURE_COUNT):
-                time.sleep(CAPTURE_INTERVAL)
-                
-                # 현재 프레임으로 예측
-                if "ONNX" in model_type or "최적화" in model_type:
-                    current_predictions = model.predict(img_array)
-                    if current_predictions is not None:
-                        current_predicted_idx = np.argmax(current_predictions[0])
-                    else:
-                        current_predicted_idx = 0
-                else:
-                    current_predictions = model.predict(img_array, verbose=0)
-                    current_predicted_idx = np.argmax(current_predictions[0])
-                
-                predicted_name = class_names_kr[current_predicted_idx]
-                captured_classes.append(predicted_name)
-                
-                # 캡처 이미지 저장
-                timestamp = time.strftime("%Y%m%d_%H%M%S")
-                capture_path = os.path.join(CAPTURE_FOLDER, f"capture_{timestamp}_{i+1}.png")
-                cv2.imwrite(capture_path, crop_frame)
-                
-                print(f"촬영 {i+1}/5... 예측: {predicted_name}")
-
-            # 최종 진단
-            print("\n" + "-"*40)
-            if len(set(captured_classes)) == 1:
-                final_diagnosis = captured_classes[0]
-                print(f"최종 진단 결과: **{final_diagnosis}**")
-                print(f"사용 모델: {model_type}")
-                print("-"*40)
-                
-                # Gemma3 해결책 요청
-                solution = get_solution_from_gemma(final_diagnosis)
-                print("\n[Ollama Gemma3의 건강 조언]")
-                print(solution)
-                print("\n(주의: 이 정보는 참고용이며, 정확한 진단과 치료를 위해 반드시 전문 의료기관을 방문하세요.)")
-                speak_korean_gtts(solution) # TTS 음성 출력
-                
-            else:
-                print("진단 실패: 예측 결과가 일치하지 않습니다.")
-                print(f"지난 {CAPTURE_COUNT}번의 예측: {captured_classes}")
-            
-            print("="*40)
-            print("\n다시 진단하려면 'c'를, 벤치마킹은 'b'를, 종료하려면 'q'를 누르세요.")
-
-        # 'q' 키로 종료
         elif key == ord('q'):
             print("프로그램을 종료합니다.")
             break
 
     cap.release()
     cv2.destroyAllWindows()
+
 
 # --- 카메라 헬퍼 함수 -------------------------------------------------
 

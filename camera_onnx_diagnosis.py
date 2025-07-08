@@ -10,7 +10,7 @@ import onnxruntime as ort
 CAPTURE_INTERVAL = 1  # 캡처 간격 (초)
 CAPTURE_COUNT = 5     # 캡처 횟수
 CAPTURE_FOLDER = "captures" # 캡처 이미지 저장 폴더
-OLLAMA_MODEL = "gemma3" # 사용할 Ollama 모델
+OLLAMA_MODEL = "gemma3:1b" # 사용할 Ollama 모델
 
 # 모델 경로 설정
 ONNX_MODEL_PATH = "./model/skin_model.onnx"
@@ -91,11 +91,7 @@ def get_solution_from_gemma(disease_name):
 각 항목은 줄바꿈으로 구분하여 제시하세요.
 답변은 200자 내외로 간결하게 작성해주세요.
     """.strip()
-
-    if disease_name in sample_responses:
-        return sample_responses[disease_name]
         
-
     print(f"\n[{OLLAMA_MODEL} 모델에게 조언을 요청합니다... 잠시만 기다려 주세요.]")
 
     try:
@@ -146,6 +142,31 @@ def initialize_model():
             print(f"H5 모델 로드 실패: {e}")
     
     return model, model_type
+# --- TTS ---
+from gtts import gTTS
+import os
+
+def speak_korean_gtts(text):
+    try:
+        tts = gTTS(text=text, lang='ko', slow=False)
+        original = "tts_output_original.mp3"
+        faster = "tts_output_fast.mp3"
+
+        tts.save(original)
+
+        # 🛠️ ffmpeg로 속도 1.5배 빠르게 변환 (tempo=1.5)
+        os.system(f"ffmpeg -y -i {original} -filter:a 'atempo=1.5' {faster}")
+
+        # 🐚 재생
+        os.system(f"mpg123 {faster}")
+
+        # 🧹 정리
+        os.remove(original)
+        os.remove(faster)
+        print(f"[🧹] mp3 파일 자동 삭제 완료..")
+
+    except Exception as e:
+        print(f"[TTS 오류] {e}")
 
 # --- 메인 로직 ---
 def main():
@@ -166,7 +187,7 @@ def main():
     print(f"사용 중인 모델: {model_type}")
     
     # 폰트 설정
-    font_path = "C:/Windows/Fonts/malgun.ttf"
+    font_path = "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc"
     try:
         font = ImageFont.truetype(font_path, 20)
     except IOError:
@@ -219,6 +240,8 @@ def main():
         
         # 화면 표시 업데이트 주기 제어
         current_time = time.time()
+        last_display_update_time = 0
+        DISPLAY_UPDATE_INTERVAL_MS = 100
         if (current_time - last_display_update_time) * 1000 >= DISPLAY_UPDATE_INTERVAL_MS:
             current_display_label = current_label
             last_display_update_time = current_time
@@ -310,6 +333,7 @@ def main():
                 print("\n[Ollama Gemma3의 건강 조언]")
                 print(solution)
                 print("\n(주의: 이 정보는 참고용이며, 정확한 진단과 치료를 위해 반드시 전문 의료기관을 방문하세요.)")
+                speak_korean_gtts(solution) # TTS 음성 출력
                 
             else:
                 print("진단 실패: 예측 결과가 일치하지 않습니다.")
